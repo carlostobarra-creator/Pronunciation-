@@ -127,7 +127,7 @@ textarea{width:100%;min-height:80px;resize:vertical;border:1px solid var(--line)
 <div class="wrap">
 <header>
   <h1>Pronunciación <span>B2</span></h1>
-  <span class="engine" id="engine"><span class="loading"><i class="spin"></i>Cargando el motor…</span></span>
+  <span class="engine" id="engine"></span>
 </header>
 
 <!-- HOY -->
@@ -271,8 +271,10 @@ var PRON_FIX={"live":"L IH1 V","lived":"L IH1 V D","lives":"L IH1 V Z","read":"R
 // palabras en las que el inglés británico usa /ɑː/ donde el americano usa /æ/
 var UK_BATH={"can't":1,"path":1,"bath":1,"dance":1,"ask":1,"after":1,"half":1,"last":1,"class":1,"fast":1,"grass":1,"glass":1,"pass":1,"answer":1,"example":1,"plant":1,"chance":1,"france":1,"laugh":1,"laughed":1,"father":1,"aunt":1,"banana":1,"castle":1,"photograph":1,"staff":1,"rather":1};
 var DICT=null;
-function loadDict(txt){ DICT={}; txt.split("\n").forEach(function(l){var i=l.indexOf(" "); if(i>0) DICT[l.slice(0,i)]=l.slice(i+1);}); }
-function arpa(w){ w=w.toLowerCase().replace(/’/g,"'"); return PRON_FIX[w]||DICT[w]||null; }
+var DCACHE={};
+function loadDict(txt){ DICT="\n"+txt+"\n"; }
+function arpa(w){ w=w.toLowerCase().replace(/’/g,"'"); if(PRON_FIX[w]) return PRON_FIX[w]; if(w in DCACHE) return DCACHE[w];
+  var k=DICT.indexOf("\n"+w+" "), r=null; if(k>=0){ var e=DICT.indexOf("\n",k+1); r=DICT.slice(k+w.length+2,e); } DCACHE[w]=r; return r; }
 function expected(w){ // -> [{p, v, st}]  v: vocal, st: acentuada
   var a=arpa(w); if(!a) return null;
   return a.split(" ").map(function(t){var m=t.match(/^([A-Z]+)(\d)?$/); var p=ARP[m[1]]; var st=m[2]; if(m[1]==="AH"&&st==="0") p="ə"; if(m[1]==="ER"&&st==="0") p="ɝ"; return {p:p,v:!!VOWELS[p],st:st!==undefined&&st!=="0"};});
@@ -432,18 +434,37 @@ function logEx(ph,ok){const d=day(); d.n++; if(ph){d.ph+=ph; d.ok+=ok;} save();}
 function streak(){let n=0; const d=new Date(); if(!S.days[today()]) d.setDate(d.getDate()-1);
   for(;;){const k=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); if(S.days[k]&&S.days[k].n>0){n++; d.setDate(d.getDate()-1);} else break;} return n;}
 // ---------- motor ----------
-let ASR=null;
-(async()=>{
-  try{
-    const T=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/dist/transformers.min.js");
-    try{T.env.backends.onnx.wasm.numThreads=1;}catch(e){}
-    const files={};
-    ASR=await T.pipeline("automatic-speech-recognition","robg/speako-phoneme-recognizer",{dtype:"q8",device:"wasm",
-      progress_callback:p=>{ if(p.status==="progress"&&p.total&&p.total>5e6){ files[p.file]=[p.loaded,p.total]; let a=0,b=0; for(const k in files){a+=files[k][0];b+=files[k][1];}
-        $("engine").innerHTML='<span class="loading"><i class="spin"></i>Descargando el motor… '+Math.round(a/1e6)+' de '+Math.round(b/1e6)+' MB</span>'; } }});
-    $("engine").textContent="Motor listo"; setRecEnabled();
-  }catch(e){ $("engine").textContent="El motor no ha cargado"; $("rec-hint").textContent="No se ha podido cargar el reconocedor de voz ("+(e&&e.message||e)+"). Comprueba la conexión y vuelve a abrir la app."; }
-})();
+let ASR=null, loadingEngine=null;
+const EKEY="pron-engine";
+function engState(){try{return localStorage.getItem(EKEY);}catch(e){return null;}}
+function setEng(v){try{localStorage.setItem(EKEY,v);}catch(e){}}
+function engineIdle(){
+  const crashed=engState()==="loading";
+  $("engine").innerHTML="";
+  const b=document.createElement("button"); b.className="btn"; b.style.padding="6px 10px"; b.style.fontSize=".8rem"; b.textContent="Activar el motor"; b.onclick=()=>loadEngine();
+  $("engine").appendChild(b);
+  if(crashed) $("rec-hint").textContent="La última vez la página se cerró al cargar el motor. Cierra las demás apps y pulsa «Activar el motor» arriba.";
+}
+function loadEngine(){
+  if(ASR) return Promise.resolve(ASR);
+  if(loadingEngine) return loadingEngine;
+  setEng("loading");
+  $("engine").innerHTML='<span class="loading"><i class="spin"></i>Cargando el motor…</span>';
+  loadingEngine=(async()=>{
+    try{
+      const T=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/dist/transformers.min.js");
+      try{T.env.backends.onnx.wasm.numThreads=1;}catch(e){}
+      const files={};
+      ASR=await T.pipeline("automatic-speech-recognition","robg/speako-phoneme-recognizer",{dtype:"q8",device:"wasm",
+        progress_callback:p=>{ if(p.status==="progress"&&p.total&&p.total>5e6){ files[p.file]=[p.loaded,p.total]; let a=0,b=0; for(const k in files){a+=files[k][0];b+=files[k][1];}
+          $("engine").innerHTML='<span class="loading"><i class="spin"></i>Descargando el motor… '+Math.round(a/1e6)+' de '+Math.round(b/1e6)+' MB</span>'; } }});
+      setEng("ok"); $("engine").textContent="Motor listo"; setRecEnabled();
+      if($("rec-hint").textContent.indexOf("motor")>=0) $("rec-hint").textContent="Pulsa, lee en voz alta lo de arriba y vuelve a pulsar al terminar.";
+      return ASR;
+    }catch(e){ setEng("error"); loadingEngine=null; engineIdle(); $("rec-hint").textContent="No se ha podido cargar el reconocedor de voz ("+(e&&e.message||e)+"). Comprueba la conexión y pulsa «Activar el motor»."; throw e; }
+  })();
+  return loadingEngine;
+}
 // ---------- audio ----------
 const player=new Audio();
 function playText(text,rate){ const b=AUDIO[text]||AUDIO[text+"."];
@@ -483,9 +504,9 @@ function speechSpan(pcm){ // segundos con voz (para el ritmo)
   const th=Math.max(0.02,peak*0.12);
   for(let i=0;i+w<=pcm.length;i+=w){let e=0; for(let j=i;j<i+w;j++){const a=Math.abs(pcm[j]); if(a>e)e=a;} if(e>th){ if(first<0)first=i; last=i+w; } }
   return first<0?0:(last-first)/16000; }
-$("b-rec").onclick=()=>{ if(busy)return; if(rec) stopRec(false); else { player.pause(); startRec(); } };
+$("b-rec").onclick=()=>{ if(busy)return; if(rec) stopRec(false); else if(!ASR){ loadEngine().catch(()=>{}); } else { player.pause(); startRec(); } };
 $("b-me").onclick=()=>{ if(!lastRec)return; const AC=window.AudioContext||window.webkitAudioContext, ctx=new AC(), b=ctx.createBuffer(1,lastRec.length,16000); b.getChannelData(0).set(lastRec); const s=ctx.createBufferSource(); s.buffer=b; s.connect(ctx.destination); s.onended=()=>ctx.close(); s.start(); };
-function setRecEnabled(){ $("b-rec").disabled=!ASR||!cur||busy; }
+function setRecEnabled(){ $("b-rec").disabled=!cur||busy||(!!loadingEngine&&!ASR); $("rec-lbl").textContent= rec?"Parar": ASR?"Grabar": loadingEngine?"Cargando el motor…":"Activar el motor y grabar"; }
 function msg(t,cls){const r=$("res"); r.hidden=false; r.className="result "+(cls||"badr"); r.innerHTML=""; const p=document.createElement("p"); p.textContent=t; r.appendChild(p);}
 // ---------- práctica ----------
 let pm="pal", cat=CATS[0].id, queue=[], qi=0, cur=null, repaso=false, libText="";
@@ -676,6 +697,7 @@ function view(v,fromSess){
 }
 document.querySelectorAll(".tabbar button").forEach(b=>b.onclick=()=>view(b.dataset.view));
 renderCats(); buildQueue(); view("hoy");
+if(engState()==="ok"&&false){} engineIdle(); setRecEnabled();
 window.__test={setASR:f=>{ASR=f; $("engine").textContent="Motor listo"; setRecEnabled();},analyze:p=>analyzeRec(p),get cur(){return cur;},view:v=>view(v)};
 
 </script>
