@@ -489,7 +489,7 @@ async function startRec(){
   catch(e){ $("rec-hint").textContent="No tengo permiso para el micrófono. En Ajustes → Safari → Micrófono, elige «Preguntar» o «Permitir»."; return; }
   const AC=window.AudioContext||window.webkitAudioContext, ctx=new AC(); if(ctx.state==="suspended") await ctx.resume();
   const src=ctx.createMediaStreamSource(stream), proc=ctx.createScriptProcessor(4096,1,1), chunks=[];
-  proc.onaudioprocess=ev=>{const d=ev.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d)); let m=0; for(let i=0;i<d.length;i+=16){const a=Math.abs(d[i]); if(a>m)m=a;} $("meter-i").style.width=Math.min(100,m*250)+"%";};
+  proc.onaudioprocess=ev=>{const d=ev.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d)); let m=0; for(let i=0;i<d.length;i+=16){const a=Math.abs(d[i]); if(a>m)m=a;} $("meter-i").style.width=Math.min(100,Math.sqrt(m)*140)+"%";};
   src.connect(proc); proc.connect(ctx.destination);
   rec={stream,ctx,proc,src,chunks,timer:setTimeout(()=>stopRec(false),cur&&(cur.kind==="sha"||cur.kind==="tem")?20000:12000)};
   $("b-rec").classList.add("on"); $("rec-lbl").textContent="Parar"; $("meter").hidden=false; $("res").hidden=true; $("rec-hint").textContent="Grabando… lee y pulsa Parar al terminar.";
@@ -502,7 +502,11 @@ async function stopRec(discard){
   const sr=r.ctx.sampleRate; try{r.ctx.close();}catch(e){} if(discard)return;
   let n=0; r.chunks.forEach(c=>n+=c.length); const all=new Float32Array(n); let o=0; r.chunks.forEach(c=>{all.set(c,o);o+=c.length;});
   if(n<sr*0.4){ msg("La grabación es demasiado corta. Pulsa Grabar, lee y pulsa Parar al acabar."); return; }
-  const pcm=await resample(all,sr,16000); lastRec=pcm; $("b-me").disabled=false; analyzeRec(pcm);
+  const pcm=await resample(all,sr,16000);
+  { let pk=0; for(let i=0;i<pcm.length;i++){const v=Math.abs(pcm[i]); if(v>pk)pk=v;}
+    if(pk<0.004){ msg("No te oigo: la grabación ha salido casi en silencio. Revisa qué micrófono usa el navegador y prueba otra vez."); return; }
+    const g=Math.min(40,0.9/pk); if(g>1) for(let i=0;i<pcm.length;i++) pcm[i]*=g; }
+  lastRec=pcm; $("b-me").disabled=false; analyzeRec(pcm);
 }
 async function resample(x,from,to){
   try{ const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext, len=Math.ceil(x.length*to/from), oc=new OAC(1,len,to), buf=oc.createBuffer(1,x.length,from);
